@@ -50,6 +50,30 @@ class RuntimeLayoutGateTest(unittest.TestCase):
             check_runtime_layout("qwen35", (32, 4096, 12288, 16, 4, 151936))
         self.assertIn("qwen35", str(raised.exception))
 
+    def test_qwen38_27b_layout_is_distinct_from_the_9b(self):
+        # Qwen3.8-27B is architecture qwen35, like the 9B, so the gate has to
+        # separate them on dimensions alone.
+        self.assertEqual(
+            check_runtime_layout("qwen35", self.signature(
+                "qwen38-27b-runtime-v1")),
+            "qwen38-27b-runtime-v1")
+        self.assertEqual(
+            check_runtime_layout("qwen35", self.signature(
+                "qwen35-9b-runtime-v1")),
+            "qwen35-9b-runtime-v1")
+
+    def test_27b_keeps_kv_head_count_and_vocab_from_the_9b(self):
+        # The two Qwen layouts differ in layers, width, FFN and head count,
+        # but share kv heads and vocab. Guard that so a future edit does not
+        # silently "fix" one and drift from the real GGUF headers.
+        big = RUNTIME_LAYOUTS["qwen38-27b-runtime-v1"]
+        small = RUNTIME_LAYOUTS["qwen35-9b-runtime-v1"]
+        self.assertEqual(big["head_count_kv"], small["head_count_kv"])
+        self.assertEqual(big["vocab_size"], small["vocab_size"])
+        for key in ("block_count", "embedding_length", "feed_forward_length",
+                    "head_count"):
+            self.assertNotEqual(big[key], small[key], key)
+
 
 class ModelToolsTest(unittest.TestCase):
     def test_capture_creates_a_valid_recipe(self):

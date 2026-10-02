@@ -52,6 +52,14 @@ RUNTIME_LAYOUTS = {
         "head_count_kv": 4,
         "vocab_size": 248320,
     },
+    "qwen38-27b-runtime-v1": {
+        "block_count": 64,
+        "embedding_length": 5120,
+        "feed_forward_length": 17408,
+        "head_count": 24,
+        "head_count_kv": 4,
+        "vocab_size": 248320,
+    },
 }
 
 
