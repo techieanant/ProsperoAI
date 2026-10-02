@@ -86,11 +86,21 @@ int qwen38_ps5_compute_select_model_files(const char *model_dir,
 
     qwen38_ps5_compute_load_us = g_now_us();
 
-    /* KV is cheaper than first assumed: at fp32 this model needs 1.00 GB for
-     * 4096 tokens (64 layers x 512 kv width x 2 x 4 bytes) against 8.42 GB of
-     * resident weights, so ~9.4 GB of a ~15 GB budget. 2048 was too small for
-     * the chat layer's 4096-character prompt plus generated tokens. */
-    const int context_length = 4096;
+    /* Sized against the PS5's 4 GiB direct arena, not against RAM. The
+     * previous figure of 4096 was computed from the KV cache alone and missed
+     * the compute buffer, which is the larger term: llama reports 4136 MiB of
+     * compute buffer at n_ctx 4096, and with KV, recurrent and output buffers
+     * the total malloc comes to 4.44 GB against a 4.00 GB arena. Allocation
+     * fails and the model never loads.
+     *
+     * Measured on this host at three context lengths:
+     *   n_ctx 2048 -> compute 2092 MiB, total 2.32 GB, headroom 1.68 GB
+     *   n_ctx 3072 -> compute 3090 MiB, total 3.42 GB, headroom 0.59 GB
+     *   n_ctx 4096 -> compute 4136 MiB, total 4.44 GB, OVER by 447 MiB
+     *
+     * 3072 still covers the chat layer's 4096-character prompt plus generated
+     * tokens, with room to spare for fragmentation. */
+    const int context_length = 3072;
     /* The PS5 has 8 Zen 2 cores. Leave one for the system's own work rather
      * than saturating all 8 and starving the compositor. */
     const int threads = 6;
