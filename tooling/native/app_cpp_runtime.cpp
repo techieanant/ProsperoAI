@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <new>
@@ -61,6 +62,10 @@ struct MappedAllocation
 void *direct_arena{};
 std::int64_t direct_arena_physical{-1};
 std::size_t direct_arena_used{};
+/* Actual mapped size, which can be smaller than direct_arena_size when the
+ * console reports less direct memory than the configured maximum. Every bounds
+ * check must use this, not the constant. */
+std::size_t direct_arena_capacity{};
 DirectAllocation *direct_tail{};
 MappedAllocation mapped_allocations[mapped_allocation_slots]{};
 std::atomic_flag direct_arena_lock = ATOMIC_FLAG_INIT;
@@ -162,25 +167,56 @@ bool release_mapped(void *address) noexcept
     if (direct_arena == nullptr)
     {
         const std::int64_t total = sceKernelGetDirectMemorySize();
+        /* Ask for the configured arena, but never more than the console
+         * actually reports. Requesting 4 GiB on a machine with less fails
+         * outright and every subsequent allocation returns null, so the model
+         * never loads and there is no diagnostic. The CPU text path needs
+         * 3.42 GB of buffers at n_ctx 3072, so anything below that cannot
+         * work regardless; sizing the arena to what is available at least
+         * lets a smaller context fit. */
+        /* A failed or negative query means we do not know what the console
+         * has. Falling back to the full request would reintroduce exactly the
+         * failure this clamp exists to prevent, so refuse instead: the caller
+         * gets null, the model reports load failure, and the reason is on
+         * stderr. */
+        if (total <= 0) {
+            fprintf(stderr, "[prosperoai] direct memory size query failed (%lld); "
+                            "cannot size the arena safely\n",
+                    static_cast<long long>(total));
+            return nullptr;
+        }
+
+        std::size_t arena_bytes = direct_arena_size;
+        if (static_cast<std::uint64_t>(total) < arena_bytes)
+            arena_bytes = static_cast<std::size_t>(total);
+        /* Keep it a multiple of the 0x4000 alignment the mapping requires. */
+        arena_bytes &= ~static_cast<std::size_t>(direct_alignment - 1);
+        if (arena_bytes < direct_arena_size)
+            fprintf(stderr,
+                    "[prosperoai] direct memory is %lld bytes, below the %zu "
+                    "requested; arena reduced to %zu\n",
+                    static_cast<long long>(total), direct_arena_size, arena_bytes);
+
         std::int64_t physical = -1;
-        if (total <= 0 ||
-            sceKernelAllocateDirectMemory(0, total, direct_arena_size, direct_alignment, 12,
+        if (arena_bytes == 0 ||
+            sceKernelAllocateDirectMemory(0, arena_bytes, arena_bytes, direct_alignment, 12,
                                           &physical) != 0 ||
-            sceKernelMapDirectMemory(&direct_arena, direct_arena_size, 0x33, 0, physical,
+            sceKernelMapDirectMemory(&direct_arena, arena_bytes, 0x33, 0, physical,
                                      direct_alignment) != 0)
         {
             if (physical >= 0)
-                sceKernelReleaseDirectMemory(physical, direct_arena_size);
+                sceKernelReleaseDirectMemory(physical, arena_bytes);
             direct_arena = nullptr;
             return nullptr;
         }
         direct_arena_physical = physical;
+        direct_arena_capacity = arena_bytes;
     }
 
     const std::size_t previous_used = direct_arena_used;
     const std::size_t offset =
         (previous_used + sizeof(DirectAllocation) + alignment - 1) & ~(alignment - 1);
-    if (offset > direct_arena_size || size > direct_arena_size - offset)
+    if (offset > direct_arena_capacity || size > direct_arena_capacity - offset)
         return nullptr;
     auto *allocation = reinterpret_cast<DirectAllocation *>(
         static_cast<unsigned char *>(direct_arena) + offset - sizeof(DirectAllocation));
@@ -197,7 +233,7 @@ bool release_direct(void *address) noexcept
         return false;
     const auto value = reinterpret_cast<std::uintptr_t>(address);
     const auto begin = reinterpret_cast<std::uintptr_t>(direct_arena);
-    if (value < begin || value >= begin + direct_arena_size)
+    if (value < begin || value >= begin + direct_arena_capacity)
         return false;
 
     auto *allocation = reinterpret_cast<DirectAllocation *>(static_cast<unsigned char *>(address) -
@@ -310,8 +346,8 @@ ps5SdIsDirectArenaRange(const void *address, std::size_t size) noexcept
         return false;
     const auto value = reinterpret_cast<std::uintptr_t>(address);
     const auto begin = reinterpret_cast<std::uintptr_t>(direct_arena);
-    return value >= begin && value <= begin + direct_arena_size &&
-           size <= begin + direct_arena_size - value;
+    return value >= begin && value <= begin + direct_arena_capacity &&
+           size <= begin + direct_arena_capacity - value;
 }
 
 extern "C" __attribute__((visibility("hidden"))) bool ps5SdReleaseDirectArenaIfEmpty() noexcept
@@ -321,9 +357,9 @@ extern "C" __attribute__((visibility("hidden"))) bool ps5SdReleaseDirectArenaIfE
         return true;
     if (direct_arena_used != 0 || direct_tail != nullptr)
         return false;
-    const int unmap_result = munmap(direct_arena, direct_arena_size);
+    const int unmap_result = munmap(direct_arena, direct_arena_capacity);
     const int release_result =
-        sceKernelReleaseDirectMemory(direct_arena_physical, direct_arena_size);
+        sceKernelReleaseDirectMemory(direct_arena_physical, direct_arena_capacity);
     direct_arena = nullptr;
     direct_arena_physical = -1;
     return unmap_result == 0 && release_result == 0;
