@@ -257,5 +257,11 @@ int ps5_gguf_text_t::generate(const char *prompt, char *out, int out_capacity,
     }
 
     free(tokens);
+    /* A return of 0 means the model chose end-of-generation on the very first
+     * token. That is a valid answer, not a failure: it is what this model does
+     * when handed a prompt it has nothing to say about, such as a page of
+     * repeated filler words. Verified by dumping the first sampled token for
+     * such a prompt -- id 248046, eog set. Callers that treat 0 as an error
+     * will misreport that case, so only a negative return is a failure. */
     return written;
 }
