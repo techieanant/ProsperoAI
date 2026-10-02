@@ -401,8 +401,20 @@ void add_model(const char *id, const char *name, const char *purpose, const char
     }
     else
 #endif
-        if (!asset_exists(model_file) || !asset_exists(tokenizer_file))
-        return;
+    {
+        if (architecture == RuntimeArchitecture::Qwen38)
+        {
+            // The CPU backend reads the GGUF directly and never touches the
+            // packed model.ps5lm image. Requiring it would double the install
+            // size for nothing.
+            char gguf[256];
+            std::snprintf(gguf, sizeof(gguf), "%s/model.gguf", root);
+            if (!asset_exists(gguf))
+                return;
+        }
+        else if (!asset_exists(model_file) || !asset_exists(tokenizer_file))
+            return;
+    }
     for (unsigned i = 0; i < model_count; ++i)
         if (std::strcmp(models[i].id, id) == 0)
             return;
