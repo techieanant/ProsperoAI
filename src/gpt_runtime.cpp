@@ -90,6 +90,7 @@ extern "C"
 
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <sys/dirent.h>
 
 namespace
@@ -452,8 +453,196 @@ void read_model_metadata(const char *path, const char *fallback, char *name,
     }
 }
 
+/*
+ * Read Qwen3.8-27B's shape signature out of a GGUF header.
+ *
+ * The packed model.ps5lm also carries these fields, but a model that runs on
+ * the CPU backend does not ship it — llama.cpp reads model.gguf directly.
+ * Detecting from the GGUF keeps model detection working for both paths.
+ *
+ * GGUF is little-endian: "GGUF", u32 version, u64 tensor_count, u64
+ * metadata_count, then that many key/value pairs where the key is a
+ * length-prefixed string and the type is a u32 tag.
+ */
+static bool gguf_u64(FILE *file, uint64_t *out)
+{
+    return std::fread(out, sizeof(*out), 1, file) == 1;
+}
+
+static bool gguf_str(FILE *file, std::string *out)
+{
+    uint64_t length = 0;
+    if (!gguf_u64(file, &length) || length > 4096) {
+        return false;
+    }
+    out->assign(static_cast<size_t>(length), '\0');
+    return length == 0 ||
+           std::fread(&(*out)[0], 1, static_cast<size_t>(length), file) ==
+               length;
+}
+
+/* Skip one metadata value of the given type tag without interpreting it.
+ * Used when walking an array whose elements we do not care about. */
+static bool gguf_value(FILE *file, uint32_t kind)
+{
+    switch (kind) {
+    case 0:
+    case 1:
+    case 7: {
+        uint8_t v;
+        return std::fread(&v, 1, 1, file) == 1;
+    }
+    case 2:
+    case 3: {
+        uint16_t v;
+        return std::fread(&v, 2, 1, file) == 1;
+    }
+    case 4:
+    case 5:
+    case 6: {
+        uint32_t v;
+        return std::fread(&v, 4, 1, file) == 1;
+    }
+    case 10:
+    case 11:
+    case 12: {
+        uint64_t v;
+        return std::fread(&v, 8, 1, file) == 1;
+    }
+    case 8: {
+        std::string v;
+        return gguf_str(file, &v);
+    }
+    default:
+        return false;
+    }
+}
+
+RuntimeArchitecture gguf_architecture(const char *path)
+{
+    std::FILE *file = std::fopen(path, "rb");
+    if (!file) {
+        return RuntimeArchitecture::Unknown;
+    }
+
+    char magic[4] = {0, 0, 0, 0};
+    uint32_t version = 0;
+    uint64_t tensor_count = 0;
+    uint64_t metadata_count = 0;
+    if (std::fread(magic, 1, 4, file) != 4 || std::memcmp(magic, "GGUF", 4) != 0 ||
+        std::fread(&version, sizeof(version), 1, file) != 1 ||
+        !gguf_u64(file, &tensor_count) || !gguf_u64(file, &metadata_count) ||
+        version < 2 || version > 3) {
+        std::fclose(file);
+        return RuntimeArchitecture::Unknown;
+    }
+
+    long block_count = 0;
+    long embedding_length = 0;
+    long feed_forward_length = 0;
+    long head_count = 0;
+    long head_count_kv = 0;
+    long vocab_size = 0;
+
+    for (uint64_t index = 0; index < metadata_count; ++index) {
+        std::string key;
+        uint32_t kind = 0;
+        if (!gguf_str(file, &key) ||
+            std::fread(&kind, sizeof(kind), 1, file) != 1) {
+            break;
+        }
+
+        long value = 0;
+        bool consumed = true;
+        switch (kind) {
+        /* Type tags from gguf_type in ggml/include/gguf.h. */
+        case 0: { /* UINT8   */ uint8_t v;  consumed = std::fread(&v, 1, 1, file) == 1; value = v; break; }
+        case 1: { /* INT8    */ int8_t v;   consumed = std::fread(&v, 1, 1, file) == 1; value = v; break; }
+        case 2: { /* UINT16  */ uint16_t v; consumed = std::fread(&v, 2, 1, file) == 1; value = v; break; }
+        case 3: { /* INT16   */ int16_t v;  consumed = std::fread(&v, 2, 1, file) == 1; value = v; break; }
+        case 4: { /* UINT32  */ uint32_t v; consumed = std::fread(&v, 4, 1, file) == 1; value = v; break; }
+        case 5: { /* INT32   */ int32_t v;  consumed = std::fread(&v, 4, 1, file) == 1; value = v; break; }
+        case 6: { /* FLOAT32 */ float v;    consumed = std::fread(&v, 4, 1, file) == 1; value = static_cast<long>(v); break; }
+        case 7: { /* BOOL    */ uint8_t v;  consumed = std::fread(&v, 1, 1, file) == 1; value = v; break; }
+        case 8: { /* STRING  */ std::string v; consumed = gguf_str(file, &v); break; }
+        case 10: { /* UINT64 */ uint64_t v; consumed = gguf_u64(file, &v); value = static_cast<long>(v); break; }
+        case 11: { /* INT64  */ int64_t v;  consumed = std::fread(&v, 8, 1, file) == 1; value = static_cast<long>(v); break; }
+        case 12: { /* FLOAT64 */ double v; consumed = std::fread(&v, 8, 1, file) == 1; value = static_cast<long>(v); break; }
+        case 9: { /* ARRAY */
+            uint32_t element = 0;
+            uint64_t count = 0;
+            consumed = std::fread(&element, sizeof(element), 1, file) == 1 &&
+                       gguf_u64(file, &count);
+            /* tokenizer.ggml.tokens is ~248k entries of (string, f32, i32).
+             * Skipping it by length keeps this scan cheap; the shape keys we
+             * need are all scalar and appear before it. */
+            if (consumed && count > 4096) {
+                break;
+            }
+            for (uint64_t item = 0; item < count && consumed; ++item) {
+                if (element == 8) {
+                    std::string text;
+                    consumed = gguf_str(file, &text);
+                } else {
+                    consumed = gguf_value(file, element);
+                }
+            }
+            break;
+        }
+        default:
+            consumed = false;
+            break;
+        }
+        if (!consumed) {
+            break;
+        }
+
+        const std::string prefix = "qwen35.";
+        if (key.compare(0, prefix.size(), prefix) != 0) {
+            continue;
+        }
+        const std::string name = key.substr(prefix.size());
+        if (name == "block_count") {
+            block_count = value;
+        } else if (name == "embedding_length") {
+            embedding_length = value;
+        } else if (name == "feed_forward_length") {
+            feed_forward_length = value;
+        } else if (name == "attention.head_count") {
+            head_count = value;
+        } else if (name == "attention.head_count_kv") {
+            head_count_kv = value;
+        } else if (name == "vocab_size") {
+            vocab_size = value;
+        }
+    }
+
+    std::fclose(file);
+    (void)tensor_count;
+
+    /* GGUF metadata has no vocab_size key — the vocabulary lives in the token
+     * array — so the signature keys off layer shape alone. Those five fields
+     * are unambiguous between the supported Qwen builds. */
+    if ((block_count == 64 || block_count == 65) && embedding_length == 5120 &&
+        feed_forward_length == 17408 && head_count == 24 && head_count_kv == 4) {
+        return RuntimeArchitecture::Qwen38;
+    }
+    if (block_count == 32 && embedding_length == 4096) {
+        if (feed_forward_length == 14336 && head_count == 32 &&
+            head_count_kv == 8) {
+            return RuntimeArchitecture::Mistral7B;
+        }
+        if (feed_forward_length == 12288 && head_count == 16 &&
+            head_count_kv == 4) {
+            return RuntimeArchitecture::Qwen35;
+        }
+    }
+    return RuntimeArchitecture::Unknown;
+}
+
 RuntimeArchitecture directory_architecture(const char *purpose, const char *runtime,
-                                           const char *model_file)
+                                           const char *model_file,
+                                           const char *model_root)
 {
 #ifdef PS5_MEDIA_IMAGE
     if (std::strcmp(purpose, "text-to-image") == 0 &&
@@ -471,8 +660,22 @@ RuntimeArchitecture directory_architecture(const char *purpose, const char *runt
         std::strcmp(runtime, "kokoro-82m-ps5agc") == 0)
         return RuntimeArchitecture::KokoroTTS;
 #endif
-    return std::strcmp(purpose, "text-to-text") == 0 ? model_architecture(model_file)
-                                                     : RuntimeArchitecture::Unknown;
+    if (std::strcmp(purpose, "text-to-text") != 0) {
+        return RuntimeArchitecture::Unknown;
+    }
+
+    /* Prefer the GGUF: it is the file a CPU-path model actually loads, and it
+     * carries the same dimensions as the packed image. Fall back to the packed
+     * header for GPU-only models that ship no GGUF. */
+    if (model_root) {
+        char gguf[256];
+        std::snprintf(gguf, sizeof(gguf), "%s/model.gguf", model_root);
+        const RuntimeArchitecture from_gguf = gguf_architecture(gguf);
+        if (from_gguf != RuntimeArchitecture::Unknown) {
+            return from_gguf;
+        }
+    }
+    return model_architecture(model_file);
 }
 
 void sort_models()
@@ -528,7 +731,7 @@ void load_models()
                     read_model_metadata(metadata_file, entry->d_name, name, sizeof(name), purpose,
                                         sizeof(purpose), runtime, sizeof(runtime));
                     add_model(entry->d_name, name, purpose, root, model_file, tokenizer_file,
-                              directory_architecture(purpose, runtime, model_file));
+                              directory_architecture(purpose, runtime, model_file, root));
                 }
                 offset += entry->d_reclen;
             }
