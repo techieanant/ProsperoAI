@@ -157,6 +157,11 @@ int ps5_gguf_text_t::generate(const char *prompt, char *out, int out_capacity,
         return -1;
     }
 
+    /* Drop any previous prompt. Without this the second turn's prompt is
+     * appended to the first turn's KV cache, and the model answers as though
+     * it were still in the previous conversation. */
+    llama_memory_clear(llama_get_memory(ctx_), true);
+
     struct llama_batch batch = llama_batch_get_one(tokens, n_prompt);
     if (llama_decode(ctx_, batch) != 0) {
         free(tokens);
@@ -191,15 +196,39 @@ int ps5_gguf_text_t::generate(const char *prompt, char *out, int out_capacity,
         if (!piece) {
             break;
         }
-        const int length = (int)strlen(piece);
-        if (written + length < out_capacity) {
-            memcpy(out + written, piece, length);
-            written += length;
-            out[written] = '\0';
-            produced += length;
-        } else {
-            break;
+        /* This vocabulary uses byte-level BPE sentinels, all multi-byte UTF-8
+         * and all needing to be decoded rather than copied:
+         *   c4 a0     U+0120  a space
+         *   c4 8a     U+010A  a newline
+         *   e2 96 81  U+2581  a space, GPT-2 style, unused by this vocab
+         * The first guess here assumed the GPT-2 mapping, which is backwards
+         * for this vocabulary and turned every space into a newline. Measured
+         * by dumping pieces: token 695 is exactly c4 a0 c4 8a, a space
+         * followed by a newline. */
+        for (const unsigned char *p = (const unsigned char *)piece; *p;) {
+            char decoded;
+            int width;
+            if (p[0] == 0xC4 && p[1] == 0xA0) {
+                decoded = ' ';
+                width = 2;
+            } else if (p[0] == 0xC4 && p[1] == 0x8A) {
+                decoded = '\n';
+                width = 2;
+            } else if (p[0] == 0xE2 && p[1] == 0x96 && p[2] == 0x81) {
+                decoded = '\n';
+                width = 3;
+            } else {
+                decoded = (char)*p;
+                width = 1;
+            }
+            p += (unsigned)width;
+            if (written + 1 >= out_capacity) {
+                break;
+            }
+            out[written++] = decoded;
         }
+        out[written] = '\0';
+        produced = written;
 
         int32_t step_token = next;
         struct llama_batch step_batch = llama_batch_get_one(&step_token, 1);
