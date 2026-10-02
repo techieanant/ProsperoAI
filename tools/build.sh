@@ -279,7 +279,17 @@ done
 [[ ! -d $root/assets ]] || cp -a "$root/assets" "$app/assets"
 content_version=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["contentVersion"])' "$param")
 grep -Fq '{{PROSPERO_AI_VERSION}}' "$app/assets/ui/main.rml"
-sed -i "s/{{PROSPERO_AI_VERSION}}/$content_version/g" "$app/assets/ui/main.rml"
+# BSD sed (macOS) requires an argument to -i and GNU sed rejects one. python3 is
+# already a build dependency and behaves identically on both hosts.
+python3 - "$app/assets/ui/main.rml" "$content_version" <<'PY'
+import sys
+
+path, version = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as source:
+    text = source.read()
+with open(path, "w", encoding="utf-8", newline="\n") as target:
+    target.write(text.replace("{{PROSPERO_AI_VERSION}}", version))
+PY
 mkdir -p "$app/models"
 cp "$root/models/README.txt" "$app/models/README.txt"
 

@@ -79,6 +79,14 @@ if [[ -z $zlib_library || ! -f $zlib_root/usr/include/zlib.h ||
     (
         cd "$zlib_source"
         CC="$compiler" AR="$archiver" RANLIB="$ranlib" ./configure --static --prefix=/usr
+        # zlib's configure forces AR=libtool with ARFLAGS=-o on Darwin, which
+        # shells out to an archiver that rejects the "-o" form. Restore real
+        # archiver flags so `make libz.a` works on macOS hosts too.
+        if [ "$(uname -s)" = Darwin ]; then
+            sed -i.bak -e 's|^AR=libtool$|AR='"$archiver"'|' \
+                      -e 's|^ARFLAGS=-o$|ARFLAGS=rc|' Makefile
+            rm -f Makefile.bak
+        fi
         make -j "$jobs" CC="$compiler" AR="$archiver" RANLIB="$ranlib"
         make DESTDIR="$zlib_root" install
     ) >"$zlib_directory/build.log"

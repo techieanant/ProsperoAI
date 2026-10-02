@@ -124,6 +124,7 @@ enum class RuntimeArchitecture : unsigned
     Unknown,
     Mistral7B,
     Qwen35,
+    Qwen38,
 #ifdef PS5_MEDIA_IMAGE
     StableDiffusion,
 #endif
@@ -200,7 +201,8 @@ RuntimeBackend *backend_for(RuntimeArchitecture architecture)
 {
     if (architecture == RuntimeArchitecture::Mistral7B)
         return &mistral_backend;
-    if (architecture == RuntimeArchitecture::Qwen35)
+    if (architecture == RuntimeArchitecture::Qwen35 ||
+        architecture == RuntimeArchitecture::Qwen38)
         return &qwen35_backend;
     return nullptr;
 }
@@ -289,15 +291,27 @@ RuntimeArchitecture model_architecture(const char *path)
     if (file)
         std::fclose(file);
     if (!read || std::memcmp(header.magic, "P5LM", 4) != 0 || header.version != 1 ||
-        header.header_bytes != 256 || header.entry_bytes != 128 || header.block_count != 32 ||
-        header.embedding_length != 4096)
+        header.header_bytes != 256 || header.entry_bytes != 128)
         return RuntimeArchitecture::Unknown;
-    if (header.feed_forward_length == 14336 && header.head_count == 32 &&
-        header.head_count_kv == 8 && header.vocab_size == 32768)
-        return RuntimeArchitecture::Mistral7B;
-    if (header.feed_forward_length == 12288 && header.head_count == 16 &&
-        header.head_count_kv == 4 && header.vocab_size == 248320)
-        return RuntimeArchitecture::Qwen35;
+    // The shared invariants above are checked before any per-model match. The
+    // per-model checks below are dimension signatures, matching the packer's
+    // RUNTIME_LAYOUTS table in model-tools/pack_ps5_model.py.
+    if (header.block_count == 32 && header.embedding_length == 4096) {
+        if (header.feed_forward_length == 14336 && header.head_count == 32 &&
+            header.head_count_kv == 8 && header.vocab_size == 32768)
+            return RuntimeArchitecture::Mistral7B;
+        if (header.feed_forward_length == 12288 && header.head_count == 16 &&
+            header.head_count_kv == 4 && header.vocab_size == 248320)
+            return RuntimeArchitecture::Qwen35;
+    }
+    // Qwen3.8-27B: same qwen35 family as the 9B, larger. The checkpoint ships
+    // with and without its MTP head, so 64 (GSQ-RCO IQ2_XS) and 65 (unsloth
+    // Q4_0, 64 transformer layers + 1 nextn) are both valid.
+    if ((header.block_count == 64 || header.block_count == 65) &&
+        header.embedding_length == 5120 && header.feed_forward_length == 17408 &&
+        header.head_count == 24 && header.head_count_kv == 4 &&
+        header.vocab_size == 248320)
+        return RuntimeArchitecture::Qwen38;
     return RuntimeArchitecture::Unknown;
 }
 
@@ -316,7 +330,8 @@ bool architecture_supported(RuntimeArchitecture architecture)
 #ifdef PS5_DUAL_BACKEND
     return backend_for(architecture) != nullptr;
 #elif defined(PS5_MODEL_QWEN35)
-    return architecture == RuntimeArchitecture::Qwen35;
+    return architecture == RuntimeArchitecture::Qwen35 ||
+           architecture == RuntimeArchitecture::Qwen38;
 #else
     return architecture == RuntimeArchitecture::Mistral7B;
 #endif
