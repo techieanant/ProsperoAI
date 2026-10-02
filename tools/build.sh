@@ -267,7 +267,10 @@ ninja_edge CONVERT "$build/eboot.elf" "$tool" link \
 ninja_run
 
 app="$dist/$title_id"
-rm -rf -- "$app"
+# Rebuild in place rather than deleting the tree. A staged model is 8 GB and
+# rm -rf destroyed it on every rebuild, silently, which cost two restores
+# while preparing this bundle. Only the build's own outputs are replaced.
+rm -f -- "$app/eboot.bin" "$dist/$title_id.zip"
 mkdir -p "$app/sce_sys" "$app/sce_module"
 "$tool" self --sign --in "$build/eboot.elf" --out "$app/eboot.bin" \
     --magic "$fself_magic"
@@ -276,7 +279,14 @@ cp "$param" "$app/sce_sys/param.json"
 for asset in icon0.png pic0.dds pic1.dds snd0.at9; do
     [[ -f $root/sce_sys/$asset ]] && cp "$root/sce_sys/$asset" "$app/sce_sys/$asset"
 done
-[[ ! -d $root/assets ]] || cp -a "$root/assets" "$app/assets"
+# Refresh the assets from source on every build. main.rml carries a
+# {{PROSPERO_AI_VERSION}} placeholder that is substituted in place below, so
+# reusing the previous copy leaves nothing to replace and the check fails.
+# This only ever touched the assets subtree, never models/.
+if [[ -d $root/assets ]]; then
+    rm -rf -- "$app/assets"
+    cp -a "$root/assets" "$app/assets"
+fi
 content_version=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["contentVersion"])' "$param")
 grep -Fq '{{PROSPERO_AI_VERSION}}' "$app/assets/ui/main.rml"
 # BSD sed (macOS) requires an argument to -i and GNU sed rejects one. python3 is
