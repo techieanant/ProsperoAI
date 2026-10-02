@@ -91,6 +91,17 @@ float *llama_get_logits_ith(struct llama_context *, int32_t);
 int32_t llama_vocab_n_tokens(const struct llama_vocab *);
 int32_t llama_vocab_is_eog(const struct llama_vocab *, int32_t);
 const char *llama_vocab_get_text(const struct llama_vocab *, int32_t);
+
+struct llama_chat_message
+{
+    const char *role;
+    const char *content;
+};
+const char *llama_chat_builtin_templates(const char *name);
+int32_t llama_chat_apply_template(const char *tmpl,
+                                  const struct llama_chat_message *chat,
+                                  size_t n_msg, bool add_ass, char *buf,
+                                  int32_t length);
 }
 
 ps5_gguf_text_t::ps5_gguf_text_t()
@@ -114,6 +125,10 @@ bool ps5_gguf_text_t::load(const char *gguf_path, int context_length,
     mp.n_gpu_layers = 0; /* CPU path; the AGC kernels cannot run this model */
     mp.use_mmap = true;
     mp.vocab_only = false;
+    /* The shipped ggml predates ggml_flash_attn_ext_set_n_kv_max, which
+     * llama-graph.cpp references whenever flash attention is enabled. Plain
+     * attention is correct here and keeps the link clean. */
+    mp.flash_attn = false;
 
     model_ = llama_model_load_from_file(gguf_path, mp);
     if (!model_) {
