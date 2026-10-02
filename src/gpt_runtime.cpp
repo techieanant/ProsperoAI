@@ -33,6 +33,7 @@ extern "C"
 
     DECLARE_MODEL_BACKEND(mistral);
     DECLARE_MODEL_BACKEND(qwen35);
+    DECLARE_MODEL_BACKEND(qwen38);
 #undef DECLARE_MODEL_BACKEND
 #else
     int run_model_chat(const ps5_chat_message_t *, std::uint32_t, std::uint32_t,
@@ -194,6 +195,7 @@ struct RuntimeBackend
 
 RuntimeBackend mistral_backend = MODEL_BACKEND(mistral);
 RuntimeBackend qwen35_backend = MODEL_BACKEND(qwen35);
+RuntimeBackend qwen38_backend = MODEL_BACKEND(qwen38);
 #undef MODEL_BACKEND
 RuntimeBackend *runtime_backend;
 
@@ -201,9 +203,12 @@ RuntimeBackend *backend_for(RuntimeArchitecture architecture)
 {
     if (architecture == RuntimeArchitecture::Mistral7B)
         return &mistral_backend;
-    if (architecture == RuntimeArchitecture::Qwen35 ||
-        architecture == RuntimeArchitecture::Qwen38)
+    if (architecture == RuntimeArchitecture::Qwen35)
         return &qwen35_backend;
+    // Qwen3.8-27B runs on the CPU backend: its shape constants are compiled
+    // into the AGC kernels, which are specialized for the 9B.
+    if (architecture == RuntimeArchitecture::Qwen38)
+        return &qwen38_backend;
     return nullptr;
 }
 
