@@ -82,7 +82,39 @@ int qwen38_ps5_compute_select_model_files(const char *model_dir,
         qwen38_ps5_compute_stage = 1;
         return -1;
     }
+
+    /* A partial upload leaves a file that opens but cannot be loaded, and
+     * llama reports that from deep inside its own loader with nothing tying
+     * it to this path. Check the magic and the size here, where the reason is
+     * obvious. The IQ2_XS build is 8422841472 bytes; anything under 6 GB is
+     * certainly not this model. */
+    char magic[4] = {0, 0, 0, 0};
+    const size_t magic_read = fread(magic, 1, 4, probe);
+    long long file_size = 0;
+    if (fseek(probe, 0, SEEK_END) == 0) {
+        const long long end = ftell(probe);
+        if (end > 0) {
+            file_size = end;
+            fprintf(stderr, "[qwen38] %s is %lld bytes\n", gguf, file_size);
+        }
+    }
     fclose(probe);
+
+    if (magic_read != 4 || memcmp(magic, "GGUF", 4) != 0) {
+        fprintf(stderr, "[qwen38] %s is not a GGUF (magic %02x %02x %02x %02x); "
+                        "the upload is incomplete or the file is wrong\n",
+                gguf, (unsigned char)magic[0], (unsigned char)magic[1],
+                (unsigned char)magic[2], (unsigned char)magic[3]);
+        qwen38_ps5_compute_stage = 1;
+        return -1;
+    }
+    if (file_size > 0 && file_size < 6LL * 1024 * 1024 * 1024) {
+        fprintf(stderr, "[qwen38] %s is only %lld bytes; the Qwen3.8-27B IQ2_XS "
+                        "model is 8422841472. The upload is truncated.\n",
+                gguf, file_size);
+        qwen38_ps5_compute_stage = 1;
+        return -1;
+    }
 
     qwen38_ps5_compute_load_us = g_now_us();
 
