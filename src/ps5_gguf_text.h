@@ -8,6 +8,9 @@
  */
 
 #pragma once
+/* The opaque handles live in llama.h, which this translation unit does not
+ * include. Keep the members as void pointers so the layout stays correct
+ * without dragging the whole header into every includer. */
 
 #include <stdint.h>
 

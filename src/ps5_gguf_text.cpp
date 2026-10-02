@@ -31,78 +31,16 @@ struct llama_model;
 struct llama_context;
 struct llama_vocab;
 
-struct llama_model_params {
-    int32_t n_gpu_layers;
-    int32_t n_ctx;
-    int32_t n_batch;
-    int32_t n_ubatch;
-    int32_t n_seq_max;
-    bool flash_attn;
-    bool no_perf;
-    void *kv_overrides;
-    void *tensor_split;
-    bool use_mmap;
-    bool use_mlock;
-    bool check_tensors;
-    bool vocab_only;
-    bool embeddings;
-};
-
-struct llama_context_params {
-    uint32_t n_ctx;
-    uint32_t n_batch;
-    uint32_t n_ubatch;
-    uint32_t n_seq_max;
-    int32_t n_threads;
-    int32_t n_threads_batch;
-    bool offload_kqv;
-    bool no_perf;
-    bool flash_attn;
-    void *kv_overrides;
-};
-
-struct llama_batch {
-    int32_t n_tokens;
-    int32_t *token;
-    int32_t *embd;
-    int32_t *pos;
-    int32_t *n_seq_id;
-    int32_t **seq_id;
-    int32_t *logits;
-};
-
-extern "C" {
-void llama_backend_init(void);
-void llama_backend_free(void);
-const struct llama_model_params *llama_model_default_params(void);
-const struct llama_context_params *llama_context_default_params(void);
-struct llama_model *llama_model_load_from_file(const char *path,
-                                              struct llama_model_params);
-void llama_model_free(struct llama_model *);
-struct llama_context *llama_new_context_with_model(
-    struct llama_model *, struct llama_context_params);
-void llama_free(struct llama_context *);
-const struct llama_vocab *llama_model_get_vocab(const struct llama_model *);
-int32_t llama_tokenize(const struct llama_vocab *, const char *, int32_t,
-                       int32_t *, int32_t, bool, bool);
-struct llama_batch llama_batch_get_one(int32_t *tokens, int32_t n_tokens);
-int32_t llama_decode(struct llama_context *, struct llama_batch);
-float *llama_get_logits_ith(struct llama_context *, int32_t);
-int32_t llama_vocab_n_tokens(const struct llama_vocab *);
-int32_t llama_vocab_is_eog(const struct llama_vocab *, int32_t);
-const char *llama_vocab_get_text(const struct llama_vocab *, int32_t);
-
-struct llama_chat_message
-{
-    const char *role;
-    const char *content;
-};
-const char *llama_chat_builtin_templates(const char *name);
-int32_t llama_chat_apply_template(const char *tmpl,
-                                  const struct llama_chat_message *chat,
-                                  size_t n_msg, bool add_ass, char *buf,
-                                  int32_t length);
-}
+/* llama.cpp's public header, vendored at vendor/include/llama.h.
+ *
+ * This file previously declared the llama structs and prototypes by hand.
+ * Those declarations were wrong: llama_model_params has many more fields
+ * than the 14 written here, in a different order, so writing n_gpu_layers or
+ * vocab_only through them would have written to the wrong offsets and
+ * corrupted the caller's copy. Using the real header removes that whole
+ * class of bug — the compiler now checks field names and types.
+ */
+#include "llama.h"
 
 ps5_gguf_text_t::ps5_gguf_text_t()
     : model_(nullptr), ctx_(nullptr), vocab_(nullptr)
@@ -121,14 +59,9 @@ bool ps5_gguf_text_t::load(const char *gguf_path, int context_length,
 
     llama_backend_init();
 
-    struct llama_model_params mp = *llama_model_default_params();
+    struct llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0; /* CPU path; the AGC kernels cannot run this model */
-    mp.use_mmap = true;
     mp.vocab_only = false;
-    /* The shipped ggml predates ggml_flash_attn_ext_set_n_kv_max, which
-     * llama-graph.cpp references whenever flash attention is enabled. Plain
-     * attention is correct here and keeps the link clean. */
-    mp.flash_attn = false;
 
     model_ = llama_model_load_from_file(gguf_path, mp);
     if (!model_) {
@@ -137,13 +70,17 @@ bool ps5_gguf_text_t::load(const char *gguf_path, int context_length,
     }
     vocab_ = llama_model_get_vocab(model_);
 
-    struct llama_context_params cp = *llama_context_default_params();
+    struct llama_context_params cp = llama_context_default_params();
     cp.n_ctx = (uint32_t)context_length;
     cp.n_batch = (uint32_t)context_length;
     cp.n_ubatch = (uint32_t)context_length;
     cp.offload_kqv = false;
     cp.n_threads = threads > 0 ? threads : 4;
     cp.n_threads_batch = cp.n_threads;
+    /* The shipped ggml predates ggml_flash_attn_ext_set_n_kv_max, which
+     * llama-graph.cpp references whenever flash attention is enabled. Plain
+     * attention is correct here and keeps the link clean. */
+    cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
 
     ctx_ = llama_new_context_with_model(model_, cp);
     if (!ctx_) {
