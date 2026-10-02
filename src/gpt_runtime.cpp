@@ -742,7 +742,13 @@ void load_models()
     if (model_count)
     {
 #ifdef PS5_MEDIA_IMAGE
-        ps5SetDirectFallback(uses_direct_fallback(models[0].architecture));
+        /* The CPU text path allocates the whole GGUF through malloc, and the
+         * malloc wrapper only routes large allocations to direct memory when
+         * this is set. Without it an 8 GB model cannot be mapped and the
+         * title dies. Text models on the AGC path manage their own direct
+         * memory and do not need it. */
+        ps5SetDirectFallback(models[0].architecture == RuntimeArchitecture::Qwen38 ||
+                             uses_direct_fallback(models[0].architecture));
 #endif
 #ifdef PS5_DUAL_BACKEND
         runtime_backend = backend_for(models[0].architecture);
@@ -861,7 +867,8 @@ bool gpt_runtime_select_model(unsigned index)
         return false;
 #endif
 #ifdef PS5_MEDIA_IMAGE
-    ps5SetDirectFallback(uses_direct_fallback(models[index].architecture));
+    ps5SetDirectFallback(models[index].architecture == RuntimeArchitecture::Qwen38 ||
+                         uses_direct_fallback(models[index].architecture));
 #endif
     selected_model = index;
     char line[192];
