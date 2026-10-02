@@ -86,19 +86,19 @@ int qwen38_ps5_compute_select_model_files(const char *model_dir,
 
     qwen38_ps5_compute_load_us = g_now_us();
 
-    /* 2048 context keeps the KV cache small enough to coexist with a 10 GB
-     * model in 16 GB. Raise once the KV path is measured on hardware. */
-    const int context_length = 2048;
-    const int threads = 4;
+    /* KV is cheaper than first assumed: at fp32 this model needs 1.00 GB for
+     * 4096 tokens (64 layers x 512 kv width x 2 x 4 bytes) against 8.42 GB of
+     * resident weights, so ~9.4 GB of a ~15 GB budget. 2048 was too small for
+     * the chat layer's 4096-character prompt plus generated tokens. */
+    const int context_length = 4096;
+    /* The PS5 has 8 Zen 2 cores. Leave one for the system's own work rather
+     * than saturating all 8 and starving the compositor. */
+    const int threads = 6;
 
     if (!g_text.load(gguf, context_length, threads)) {
         qwen38_ps5_compute_stage = 2;
         return -1;
     }
-
-    qwen38_ps5_compute_model_path = 1;
-    qwen38_ps5_compute_tokenizer_path = 1;
-    qwen38_ps5_compute_stage = 3;
     return 0;
 }
 

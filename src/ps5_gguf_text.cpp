@@ -125,14 +125,32 @@ int ps5_gguf_text_t::generate(const char *prompt, char *out, int out_capacity,
     }
     out[0] = '\0';
 
-    const int prompt_tokens = 512;
-    int32_t *tokens = (int32_t *)calloc(prompt_tokens, sizeof(int32_t));
+    /* llama_tokenize returns a negative value when the buffer is too small, and
+     * the chat layer builds prompts up to 4096 characters — comfortably over a
+     * fixed 512 tokens. Grow until it fits rather than failing every long
+     * prompt. */
+    int32_t capacity = 512;
+    int32_t *tokens = (int32_t *)calloc((size_t)capacity, sizeof(int32_t));
     if (!tokens) {
         return -1;
     }
-    const int32_t n_prompt = llama_tokenize(
-        vocab_, prompt, (int32_t)strlen(prompt), tokens, prompt_tokens, true,
-        true);
+
+    const int32_t text_len = (int32_t)strlen(prompt);
+    int32_t n_prompt = llama_tokenize(vocab_, prompt, text_len, tokens, capacity,
+                                      true, true);
+    while (n_prompt < 0 && capacity < 8192) {
+        const int32_t grown = capacity * 2;
+        int32_t *bigger =
+            (int32_t *)realloc(tokens, (size_t)grown * sizeof(int32_t));
+        if (!bigger) {
+            free(tokens);
+            return -1;
+        }
+        tokens = bigger;
+        capacity = grown;
+        n_prompt = llama_tokenize(vocab_, prompt, text_len, tokens, capacity,
+                                  true, true);
+    }
     if (n_prompt <= 0) {
         free(tokens);
         fprintf(stderr, "[gguf_text] tokenize failed (%d)\n", n_prompt);
