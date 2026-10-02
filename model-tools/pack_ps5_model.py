@@ -28,6 +28,17 @@ KIND_Q8_0_F32 = 2
 KIND_Q6_K_F32 = 3
 KIND_Q4_1_F32 = 4
 KIND_Q5_K_F32 = 5
+KIND_Q2_K_F32 = 6
+KIND_Q4_K_F32 = 7
+KIND_IQ2_XXS_F32 = 8
+KIND_IQ2_XS_F32 = 9
+KIND_IQ1_S_F32 = 10
+KIND_IQ1_M_F32 = 11
+KIND_IQ2_S_F32 = 12
+KIND_IQ3_XXS_F32 = 13
+KIND_IQ3_S_F32 = 14
+KIND_IQ4_XS_F32 = 15
+KIND_BF16_F32 = 16
 
 
 # Runtime layouts, keyed by the packed-header dimensions the runtime itself
@@ -53,7 +64,9 @@ RUNTIME_LAYOUTS = {
         "vocab_size": 248320,
     },
     "qwen38-27b-runtime-v1": {
-        "block_count": 64,
+        # 65, not 64: Qwen3.8-27B ships 64 transformer layers plus a nextn
+        # (MTP) prediction layer, which the GGUF counts in block_count.
+        "block_count": 65,
         "embedding_length": 5120,
         "feed_forward_length": 17408,
         "head_count": 24,
@@ -61,6 +74,18 @@ RUNTIME_LAYOUTS = {
         "vocab_size": 248320,
     },
 }
+
+# The same Qwen3.8-27B checkpoint ships with and without its MTP head, so
+# block_count differs between builds of the identical model: unsloth's Q4_0
+# GGUF reports 65 (64 transformer layers + 1 nextn layer), the GSQ-RCO IQ2_XS
+# build reports 64. Treat block_count as a set per layout rather than a scalar.
+LAYOUT_BLOCK_COUNTS = {
+    "qwen38-27b-runtime-v1": (64, 65),
+}
+
+
+def accepted_block_counts(layout: str, spec: dict) -> tuple:
+    return LAYOUT_BLOCK_COUNTS.get(layout, (spec["block_count"],))
 
 
 def check_runtime_layout(architecture: str, signature: tuple) -> str:
@@ -71,9 +96,12 @@ def check_runtime_layout(architecture: str, signature: tuple) -> str:
     "unsupported model" error into an actionable pack-time message.
     """
     for layout, spec in sorted(RUNTIME_LAYOUTS.items()):
-        if signature == (spec["block_count"], spec["embedding_length"],
-                         spec["feed_forward_length"], spec["head_count"],
-                         spec["head_count_kv"], spec["vocab_size"]):
+        if (signature[0] in accepted_block_counts(layout, spec) and
+                signature[1:] == (spec["embedding_length"],
+                                 spec["feed_forward_length"],
+                                 spec["head_count"],
+                                 spec["head_count_kv"],
+                                 spec["vocab_size"])):
             return layout
     supported = ", ".join(sorted(RUNTIME_LAYOUTS))
     raise ValueError(
@@ -117,6 +145,12 @@ def expanded_bytes(tensor) -> int:
         return source_bytes // 176 * 224
     if tensor["type"] == 14:
         return source_bytes // 210 * 256
+    # i-quants (and BF16) are stored verbatim. Unlike Q4_0/Q6_K, which widen
+    # scales to fp32, the i-quants are *codebook* quantizations: widening them
+    # here would expand 74 bytes/block to 1024 (13.8x) and destroy the memory
+    # budget they exist to meet. They are dequantized on the GPU at use time.
+    if tensor["type"] in (10, 12, 16, 17, 18, 19, 21, 22, 23, 29, 30):
+        return source_bytes
     raise ValueError(f"unsupported tensor type {tensor['type']}")
 
 
@@ -128,11 +162,27 @@ def expanded_kind(source_type: int) -> int:
         8: KIND_Q8_0_F32,
         13: KIND_Q5_K_F32,
         14: KIND_Q6_K_F32,
+        10: KIND_Q2_K_F32,
+        12: KIND_Q4_K_F32,
+        16: KIND_IQ2_XXS_F32,
+        17: KIND_IQ2_XS_F32,
+        19: KIND_IQ1_S_F32,
+        18: KIND_IQ3_XXS_F32,
+        21: KIND_IQ3_S_F32,
+        22: KIND_IQ2_S_F32,
+        23: KIND_IQ4_XS_F32,
+        29: KIND_IQ1_M_F32,
+        30: KIND_BF16_F32,
     }[source_type]
 
 
 def write_expanded(output, raw: bytes, source_type: int):
     if source_type == 0:
+        output.write(raw)
+        return
+    # i-quants, Q2_K/Q4_K and BF16 are stored byte-identical to the source
+    # block layout; see expanded_bytes() for why they are not widened.
+    if source_type in (10, 12, 16, 17, 18, 19, 21, 22, 23, 29, 30):
         output.write(raw)
         return
     if np is not None:

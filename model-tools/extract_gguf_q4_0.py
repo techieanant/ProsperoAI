@@ -78,6 +78,30 @@ def tensor_bytes(tensor):
         return elements // 256 * 176
     if tensor["type"] == 14:
         return elements // 256 * 210
+    # i-quants: 256 elements per super-block. Sizes from llama.cpp
+    # ggml-common.h static_asserts, not guessed.
+    if tensor["type"] == 16:
+        return elements // 256 * 66      # IQ2_XXS: d(2) + qs[32]
+    if tensor["type"] == 17:
+        return elements // 256 * 74      # IQ2_XS:  d(2) + qs[32] + scales[8]
+    if tensor["type"] == 19:
+        return elements // 256 * 56      # IQ1_S
+    if tensor["type"] == 21:
+        return elements // 256 * 110     # IQ3_S
+    if tensor["type"] == 22:
+        return elements // 256 * 82      # IQ2_S
+    if tensor["type"] == 23:
+        return elements // 256 * 136     # IQ4_XS
+    if tensor["type"] == 29:
+        return elements // 256 * 56      # IQ1_M
+    if tensor["type"] == 10:
+        return elements // 256 * 84      # Q2_K
+    if tensor["type"] == 12:
+        return elements // 256 * 144     # Q4_K
+    if tensor["type"] == 18:
+        return elements // 256 * 98      # IQ3_XXS
+    if tensor["type"] == 30:
+        return elements * 2              # BF16
     raise ValueError(f"unsupported GGML tensor type {tensor['type']}")
 
 
