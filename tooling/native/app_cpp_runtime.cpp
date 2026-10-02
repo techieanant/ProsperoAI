@@ -198,17 +198,29 @@ bool release_mapped(void *address) noexcept
                     static_cast<long long>(total), direct_arena_size, arena_bytes);
 
         std::int64_t physical = -1;
-        if (arena_bytes == 0 ||
+        const std::int64_t alloc_result =
             sceKernelAllocateDirectMemory(0, arena_bytes, arena_bytes, direct_alignment, 12,
-                                          &physical) != 0 ||
-            sceKernelMapDirectMemory(&direct_arena, arena_bytes, 0x33, 0, physical,
-                                     direct_alignment) != 0)
-        {
+                                          &physical);
+        int map_result = 0;
+        if (alloc_result == 0) {
+            map_result = sceKernelMapDirectMemory(&direct_arena, arena_bytes, 0x33, 0, physical,
+                                                 direct_alignment);
+        }
+        if (arena_bytes == 0 || alloc_result != 0 || map_result != 0) {
+            /* This is the failure that costs the model: every later allocation
+             * returns null and the title dies at load. Say which call failed
+             * rather than leaving it to be guessed at. */
+            fprintf(stderr,
+                    "[prosperoai] direct arena setup failed: requested %zu bytes, "
+                    "allocate returned %lld, map returned %d\n",
+                    arena_bytes, static_cast<long long>(alloc_result), map_result);
             if (physical >= 0)
                 sceKernelReleaseDirectMemory(physical, arena_bytes);
             direct_arena = nullptr;
             return nullptr;
         }
+        fprintf(stderr, "[prosperoai] direct arena: %zu bytes mapped of %lld reported\n",
+                arena_bytes, static_cast<long long>(total));
         direct_arena_physical = physical;
         direct_arena_capacity = arena_bytes;
     }
@@ -216,8 +228,16 @@ bool release_mapped(void *address) noexcept
     const std::size_t previous_used = direct_arena_used;
     const std::size_t offset =
         (previous_used + sizeof(DirectAllocation) + alignment - 1) & ~(alignment - 1);
-    if (offset > direct_arena_capacity || size > direct_arena_capacity - offset)
+    if (offset > direct_arena_capacity || size > direct_arena_capacity - offset) {
+        /* Exhausting the arena is how the CPU text path fails when the model
+         * needs more direct memory than the console has. Name the request so a
+         * log shows which buffer did not fit. */
+        fprintf(stderr,
+                "[prosperoai] direct arena exhausted: need %zu bytes at offset %zu, "
+                "%zu of %zu used\n",
+                size, offset, direct_arena_used, direct_arena_capacity);
         return nullptr;
+    }
     auto *allocation = reinterpret_cast<DirectAllocation *>(
         static_cast<unsigned char *>(direct_arena) + offset - sizeof(DirectAllocation));
     *allocation = {direct_allocation_magic, previous_used, direct_tail, false};

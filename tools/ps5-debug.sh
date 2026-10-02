@@ -91,17 +91,20 @@ for f in "$OUT"/listing*; do
 done
 
 # Surface anything that looks like a crash signature.
-bold "Crash indicators"
+bold "Runtime indicators"
+# The CPU text path fails at load rather than crashing, so a silent title that
+# never shows a model is the expected symptom. These patterns name that case,
+# along with the compat shims, which is the other silent failure mode.
+patterns='crash|fatal|abort|segfault|exception|assert|trap|panic|direct arena|direct memory|ps5_compat|gguf_text|prosperoai'
 found=0
 for f in "$OUT"/*; do
     case "$f" in *.txt) continue ;; esac
     [ -s "$f" ] || continue
-    if grep -aiE "crash|fatal|abort|segfault|exception|assert|trap|panic" "$f" >/dev/null 2>&1; then
+    if grep -aiE "$patterns" "$f" >/dev/null 2>&1; then
         printf '\n=== %s ===\n' "$(basename "$f")"
-        grep -aiE -B2 -A2 "crash|fatal|abort|segfault|exception|assert|trap|panic" "$f" | head -30
+        grep -aiE -B2 -A2 "$patterns" "$f" | head -40
         found=1
     fi
 done
-[ "$found" -eq 0 ] && warn "No crash indicators in the files retrieved."
-
+[ "$found" -eq 0 ] && warn "No crash or runtime indicators in the files retrieved."
 printf '\nLogs in %s\n' "$OUT"
