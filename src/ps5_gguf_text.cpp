@@ -157,8 +157,23 @@ int ps5_gguf_text_t::generate(const char *prompt, char *out, int out_capacity,
         return -1;
     }
 
+    /* llama_decode asserts n_tokens <= n_batch. A prompt longer than the
+     * batch aborts the process rather than returning an error, which on the
+     * PS5 is a hard crash with no diagnostic. Trim to the last token that
+     * fits so an over-long prompt degrades to a truncated one. */
+    int32_t batch_limit = (int32_t)llama_n_batch(ctx_);
+    if (batch_limit <= 0) {
+        batch_limit = n_prompt;
+    }
+    const int32_t trimmed = n_prompt > batch_limit ? batch_limit : n_prompt;
+    if (trimmed != n_prompt) {
+        fprintf(stderr, "[gguf_text] prompt %d tokens exceeds batch %d; "
+                        "truncating\n", n_prompt, batch_limit);
+        n_prompt = trimmed;
+    }
+
     /* Drop any previous prompt. Without this the second turn's prompt is
-     * appended to the first turn's KV cache, and the model answers as though
+     * appended to the first one's cache, and the model answers as though
      * it were still in the previous conversation. */
     llama_memory_clear(llama_get_memory(ctx_), true);
 
