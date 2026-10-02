@@ -133,11 +133,20 @@ int qwen38_ps5_compute_select_model_files(const char *model_dir,
      * 3072 still covers the chat layer's 4096-character prompt plus generated
      * tokens, with room to spare for fragmentation. */
     const int context_length = 3072;
+    /* Tokens per forward pass. The compute buffer scales with this, not with
+     * the context length: measured on the real 27B at n_ctx 3072, going from
+     * 3072 to 1536 halves the compute buffer from 3090 MiB to 1545 MiB and
+     * the arena total from 3.35 GB to 1.84 GB. That is the difference between
+     * needing more than 3 GB of direct memory and fitting in 2.
+     *
+     * A chat prompt is well under 1536 tokens so the common case still
+     * prefills in one pass, and per-token decode is unaffected. */
+    const int batch_tokens = 1536;
     /* The PS5 has 8 Zen 2 cores. Leave one for the system's own work rather
      * than saturating all 8 and starving the compositor. */
     const int threads = 6;
 
-    if (!g_text.load(gguf, context_length, threads)) {
+    if (!g_text.load(gguf, context_length, threads, batch_tokens)) {
         qwen38_ps5_compute_stage = 2;
         return -1;
     }

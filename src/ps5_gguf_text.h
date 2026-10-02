@@ -27,8 +27,12 @@ struct ps5_gguf_text_t
     ps5_gguf_text_t();
     ~ps5_gguf_text_t();
 
-    /* Load a GGUF and create a context. Returns false on failure. */
-    bool load(const char *gguf_path, int context_length, int threads);
+    /* Load a GGUF and create a context. Returns false on failure.
+     * batch_tokens caps how many tokens one forward pass handles. It sizes the
+     * compute buffer, which is the largest consumer of direct memory on the
+     * PS5; pass 0 to use the full context length. */
+    bool load(const char *gguf_path, int context_length, int threads,
+              int batch_tokens = 0);
 
     void unload();
     bool ready() const;

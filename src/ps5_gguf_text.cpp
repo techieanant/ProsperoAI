@@ -53,7 +53,7 @@ ps5_gguf_text_t::~ps5_gguf_text_t()
 }
 
 bool ps5_gguf_text_t::load(const char *gguf_path, int context_length,
-                           int threads)
+                           int threads, int batch_tokens)
 {
     unload();
 
@@ -72,8 +72,24 @@ bool ps5_gguf_text_t::load(const char *gguf_path, int context_length,
 
     struct llama_context_params cp = llama_context_default_params();
     cp.n_ctx = (uint32_t)context_length;
+    /* n_ctx is how much conversation is remembered. n_ubatch is how many
+     * tokens one forward pass handles, and the compute buffer is sized by the
+     * latter, not the former. Measured on the real 27B at n_ctx 3072:
+     *
+     *   n_ubatch 3072 -> compute 3090 MiB, arena total 3.35 GB
+     *   n_ubatch 1536 -> compute 1545 MiB, arena total 1.84 GB
+     *   n_ubatch  768 -> compute  773 MiB, arena total 1.09 GB
+     *
+     * The compute buffer is the largest consumer of the PS5's direct memory,
+     * so halving it halves the requirement without shortening the context.
+     * 1536 fits even a console reporting only 2 GB, where 3072 needs over 3.
+     *
+     * The trade is throughput: a long prompt prefills in ceil(n/1536) passes
+     * instead of one. A chat prompt is well under 1536 tokens, so the common
+     * case still prefills in a single pass, and single-token decode is
+     * unaffected either way. */
     cp.n_batch = (uint32_t)context_length;
-    cp.n_ubatch = (uint32_t)context_length;
+    cp.n_ubatch = (uint32_t)(batch_tokens > 0 ? batch_tokens : context_length);
     cp.offload_kqv = false;
     cp.n_threads = threads > 0 ? threads : 4;
     cp.n_threads_batch = cp.n_threads;
