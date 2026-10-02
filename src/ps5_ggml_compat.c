@@ -85,6 +85,7 @@ void ggml_flash_attn_ext_set_n_kv_max(struct ggml_tensor *a, int32_t n)
 
 struct ggml_tensor *ggml_rope_set_offset(struct ggml_tensor *a, int n_offs)
 {
+    (void)n_offs;
     fprintf(stderr, "[ps5_compat] ggml_rope_set_offset reached; "
                     "rope offset not applied\n");
     return a;

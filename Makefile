@@ -67,7 +67,15 @@ test: test-integration
 test-deps:
 	@printf '%s\n' '==> [test-deps] No host-only dependencies are required'
 
-test-unit: assets-check
+test-unit: assets-check ggml-compat-test
+
+ggml-compat-test:
+	@printf '%s\n' '==> [ggml-compat-test] Checking the compat shims return correctly'
+	@mkdir -p build/compat-test
+	@cc -std=c11 -O2 -Wall -Wextra -c tests/test_ggml_compat.c -o build/compat-test/t.o
+	@cc -std=c11 -O2 -Wall -Wextra -c src/ps5_ggml_compat.c -o build/compat-test/c.o
+	@cc build/compat-test/t.o build/compat-test/c.o -o build/compat-test/t
+	@./build/compat-test/t 2>/dev/null
 
 test-integration:
 	@printf '%s\n' '==> [test-integration] Running host tooling integration tests'
