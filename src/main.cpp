@@ -714,16 +714,24 @@ void PresentColor(SDL_Renderer *renderer, SDL_Window *window, Uint8 red, Uint8 g
     SDL_RenderFlush(renderer);
     SDL_UpdateWindowSurface(window);
 }
+extern "C" void ps5SetDirectFallback(int enabled) noexcept;
 
 bool RunApp()
 {
+    /* Turn the direct-memory fallback on before anything allocates. It used to
+     * be set much later, from gpt_runtime.cpp once a model had been selected,
+     * so every allocation during SDL and RmlUi startup ran with no fallback
+     * available: if malloc failed there, operator new had nowhere to go and
+     * trapped, which the console reports as SIGILL. Cost is one direct arena
+     * held open for the app's lifetime. */
+    ps5SetDirectFallback(1);
+
     if (ps5_agc_backend_reserve() != 0)
         return false;
     if (SDL_SetMemoryFunctions(AllocateTracked, CallocTracked, ReallocTracked, FreeTracked) != 0)
     {
         return false;
     }
-
     SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
     {

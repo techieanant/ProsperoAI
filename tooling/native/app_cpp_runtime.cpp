@@ -103,7 +103,12 @@ struct DirectArenaLock
         }
     }
     if (!slot)
+    {
+        fprintf(stderr, "[prosperoai] no free mapped-allocation slot for %zu bytes "
+                        "(%zu slots, none released)\n",
+                size, sizeof(mapped_allocations) / sizeof(mapped_allocations[0]));
         return nullptr;
+    }
 
     const std::size_t required = size + alignment - 1;
     const std::size_t mapped_size = (required + direct_alignment - 1) & ~(direct_alignment - 1);
@@ -138,7 +143,17 @@ struct DirectArenaLock
         if (void *address = allocate_mapped(size, alignment, !use_direct))
             return address;
     }
-    return use_direct ? allocate_direct(size, alignment) : nullptr;
+    /* Previously this returned null outright when direct fallback was off.
+     * That flag is set from gpt_runtime.cpp once a model has been selected,
+     * which happens well after gpt_input_init() and app.Initialize() during
+     * startup. Any allocation that exhausted malloc in that window had no
+     * fallback at all, and operator new turned that into __builtin_trap,
+     * which the console reports as SIGILL rather than as an allocation
+     * failure. Try the direct arena anyway: it is the last resort before
+     * trapping, and refusing outright could only be worse. */
+    if (void *address = allocate_direct(size, alignment))
+        return address;
+    return nullptr;
 }
 
 bool release_mapped(void *address) noexcept
@@ -276,7 +291,16 @@ bool release_direct(void *address) noexcept
     size = size == 0 ? 1 : size;
     if (void *address = malloc(size))
         return address;
-    return allocate_fallback(size, alignof(std::max_align_t));
+    if (void *address = allocate_fallback(size, alignof(std::max_align_t)))
+        return address;
+    /* operator new calls allocation_failure() -> __builtin_trap() when this
+     * returns null, and the console reports that as SIGILL at the trap in
+     * this file rather than as an allocation failure. Name the request so the
+     * log shows what could not be satisfied. */
+    fprintf(stderr, "[prosperoai] allocation of %zu bytes failed: malloc returned null "
+                    "and the fallback allocator could not satisfy it\n",
+            size);
+    return nullptr;
 }
 
 [[nodiscard]] void *allocate_aligned(std::size_t size, std::size_t alignment) noexcept
@@ -389,6 +413,11 @@ void *operator new(std::size_t size)
 {
     if (void *address = allocate(size))
         return address;
+    /* This build is -fno-exceptions, so the only correct thing a throwing
+     * operator new can do is trap. On the console that surfaced as SIGILL at
+     * this function's ud2 with nothing to indicate an allocation had failed.
+     * Name the request before trapping so the log shows what it was. */
+    fprintf(stderr, "[prosperoai] operator new(%zu) could not allocate\n", size);
     allocation_failure();
 }
 
